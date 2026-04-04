@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"youtube_suite\" /mnt/c/Users/pablo/Projects/youtube_suite/*.md /mnt/c/Users/pablo/Projects/youtube_suite/alembic/)",
+      "Bash(cp:*)",
+      "Bash(xargs sed:*)",
+      "Bash(sed -i 's/youtube_suite/youtube_suite/g; s/creator-intel-platform/youtube-suite/g; s/creator_intel/youtube_suite/g' pyproject.toml)",
+      "Bash(sed -i 's/youtube_suite/youtube_suite/g' alembic/env.py Dockerfile tests/test_smoke.py)",
+      "Bash(python -c ':*)",
+      "Bash(python3 -c ':*)",
+      "Bash(python3 -m pytest tests/test_smoke.py -v)",
+      "Bash(venv/bin/python:*)",
+      "Bash(venv/bin/pip install:*)",
+      "Bash(python3 -m pip install -e . --break-system-packages)",
+      "Bash(python3 -m pip install pytest --break-system-packages -q)",
+      "Bash(python3:*)",
+      "WebSearch"
+    ]
+  }
+}
