@@ -52,7 +52,7 @@ class SubtitleRunRequest(BaseModel):
 
 
 class DescriptionRunRequest(BaseModel):
-    pass
+    language: str = Field("es", description="BCP-47 language code for the description (e.g. 'es', 'en', 'fr')")
 
 
 class SubtitleRunResponse(BaseModel):
@@ -96,6 +96,23 @@ class TrendingKeywordsResponse(BaseModel):
     keywords: list[str]
 
 
+class AssetListItem(BaseModel):
+    id: UUID
+    filename: str
+    title: str | None
+    duration_seconds: float | None
+    market_video_id: str | None
+    created_at: datetime
+    has_transcript: bool
+    has_description: bool
+    has_shorts: bool
+
+
+class AssetListResponse(BaseModel):
+    total: int
+    assets: list[AssetListItem]
+
+
 class MarketVideoOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -107,3 +124,71 @@ class MarketVideoOut(BaseModel):
     duration: str | None
     category_id: str | None
     inserted_at: datetime | None
+
+
+# ── Market listing & charts ───────────────────────────────────────────────────
+
+class MarketVideoListItem(BaseModel):
+    video_id: str
+    title: str | None
+    channel_title: str | None
+    view_count: int
+    like_count: int
+    comment_count: int
+    published_at: datetime | None
+    duration: str | None
+    category_id: str | None
+
+
+class MarketVideoListResponse(BaseModel):
+    total: int
+    page: int
+    limit: int
+    videos: list[MarketVideoListItem]
+
+
+class MarketOverviewResponse(BaseModel):
+    total_videos: int
+    total_channels: int
+    total_comments: int
+    total_views: int
+
+
+class TopVideoItem(BaseModel):
+    video_id: str
+    title: str | None
+    view_count: int
+    like_count: int
+    comment_count: int
+
+
+class TopVideosResponse(BaseModel):
+    videos: list[TopVideoItem]
+
+
+class ViewsOverTimePoint(BaseModel):
+    date: str
+    total_views: int
+    total_likes: int
+
+
+class ViewsOverTimeResponse(BaseModel):
+    data: list[ViewsOverTimePoint]
+
+
+class CategoryBreakdownItem(BaseModel):
+    category_id: str | None
+    count: int
+    total_views: int
+
+
+class CategoryBreakdownResponse(BaseModel):
+    data: list[CategoryBreakdownItem]
+
+
+# ── Studio extras ─────────────────────────────────────────────────────────────
+
+class AssetShortsResponse(BaseModel):
+    job_id: UUID
+    total_clips: int
+    clips: list[ClipInfo]

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from youtube_suite.application.insights.trending_service import get_trending_keywords
@@ -218,7 +218,7 @@ class StudioSubtitleService:
             if chunk_job_dir.exists():
                 shutil.rmtree(chunk_job_dir, ignore_errors=True)
 
-    def run_description_pipeline(self, asset_id: uuid.UUID, job_id: uuid.UUID) -> None:
+    def run_description_pipeline(self, asset_id: uuid.UUID, job_id: uuid.UUID, language: str = "es") -> None:
         """Generate an OpenAI SEO description from persisted transcript segments.
 
         Does not require the original video file — reads from ``studio.transcript_segments``.
@@ -254,6 +254,7 @@ class StudioSubtitleService:
                     full_text,
                     trending_keywords=trending,
                     title=asset.title or "",
+                    language=language,
                 )
                 logger.info("[%s] Description generated (%d chars)", job_id, len(body))
             except Exception as exc:
@@ -261,12 +262,16 @@ class StudioSubtitleService:
                 body = full_text[:2000]
 
             _update_job(self.session, job, "processing", 0.90, "Guardando descripción…")
-            self.session.execute(
-                delete(StudioGeneratedDescription).where(StudioGeneratedDescription.asset_id == asset_id)
-            )
-            self.session.add(
-                StudioGeneratedDescription(asset_id=asset_id, body=body, model_name="openai")
-            )
+            existing = self.session.execute(
+                select(StudioGeneratedDescription).where(StudioGeneratedDescription.asset_id == asset_id)
+            ).scalar_one_or_none()
+            if existing is not None:
+                existing.body = body
+                existing.model_name = "openai"
+            else:
+                self.session.add(
+                    StudioGeneratedDescription(asset_id=asset_id, body=body, model_name="openai")
+                )
             self.session.commit()
 
             _update_job(self.session, job, "completed", 1.0, "Descripción generada")

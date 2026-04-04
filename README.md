@@ -77,7 +77,36 @@ Trending keywords for Studio descriptions are derived from **Market** data only 
 
    Browse **http://localhost:8000/docs** for interactive OpenAPI.
 
-5. **CLI (Market ETL)**
+5. **Frontend (React SPA)**
+
+   Requirements: Node.js 18+
+
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+   Open **http://localhost:5173** — the Vite dev server proxies all API calls (`/market`, `/studio`, `/jobs`, `/insights`) to the FastAPI backend on port 8000. Both processes must run concurrently.
+
+   **Tabs:**
+   - **Market** — Paginated video table with stats, trending sync, YouTube search, KPI cards and charts.
+   - **Studio** — Upload videos (drag & drop), view/manage assets, run subtitle/description/shorts pipelines with real-time job progress toasts.
+
+   **Production build:**
+
+   ```bash
+   cd frontend
+   npm run build   # static output in frontend/dist/
+   ```
+
+   To serve the SPA from FastAPI itself, add to `api/main.py`:
+   ```python
+   from fastapi.staticfiles import StaticFiles
+   app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="spa")
+   ```
+
+6. **CLI (Market ETL)**
 
    ```bash
    cip market videos trending --region ES
@@ -98,9 +127,9 @@ Trending keywords for Studio descriptions are derived from **Market** data only 
 
 ## API surface (overview)
 
-- **`/market`** — Sync channels, videos, stats snapshots, comments; search-and-load workflows; `GET /market/videos/{video_id}`.
-- **`/studio`** — Upload assets, run subtitle pipeline (background tasks), run Shorts pipeline, read asset / transcript / latest description.
-- **`/jobs`** — Poll job status, list clips, download clip files for completed Shorts jobs.
+- **`/market`** — Sync channels, videos, stats snapshots, comments; search-and-load; `GET /market/videos` (paginated list with latest stats); `GET /market/overview` (KPI aggregates); `GET /market/charts/top-videos|views-over-time|category-breakdown` (chart data).
+- **`/studio`** — Upload assets, run subtitle/description/shorts pipelines (background tasks), stream original/subtitled video files, list clips for an asset; read transcript segments and generated descriptions.
+- **`/jobs`** — Poll job status and progress, list clips, download individual clip files for completed Shorts jobs.
 - **`/insights`** — `GET /insights/trending-keywords` from recent high-engagement Market titles + stats.
 
 ---

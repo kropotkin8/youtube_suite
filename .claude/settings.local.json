@@ -14,7 +14,17 @@
       "Bash(python3 -m pip install -e . --break-system-packages)",
       "Bash(python3 -m pip install pytest --break-system-packages -q)",
       "Bash(python3:*)",
-      "WebSearch"
+      "WebSearch",
+      "Skill(claude-api)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Read(//usr/bin/**)",
+      "Bash(command -v nvm)",
+      "Read(//home/pablo/.nvm/versions/**)",
+      "Bash(ls /usr/bin/npm*)",
+      "Read(//usr/local/bin/**)",
+      "Bash(/usr/bin/npm install:*)",
+      "Bash(/usr/bin/npx tailwindcss:*)",
+      "Bash(/usr/bin/npm run:*)"
     ]
   }
 }

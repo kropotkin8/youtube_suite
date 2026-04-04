@@ -22,6 +22,7 @@ dependencies = [
   "python-dateutil>=2.8",
   "click>=8.0",
   "openai>=1.0",
+  "anthropic>=0.40",
   "ffmpeg-python>=0.2.0",
   "faster-whisper>=1.0",
   "python-multipart>=0.0.6",

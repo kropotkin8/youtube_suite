@@ -5,12 +5,17 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
-from sqlalchemy import select
+from fastapi.responses import FileResponse
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 
 from youtube_suite.api.deps import get_db
 from youtube_suite.api.schemas import (
+    AssetListItem,
+    AssetListResponse,
+    AssetShortsResponse,
+    ClipInfo,
     DescriptionRunRequest,
     ShortsRunResponse,
     SubtitleRunRequest,
@@ -26,9 +31,11 @@ from youtube_suite.application.studio.subtitle_service import (
     create_description_job,
     create_subtitle_job,
 )
+from youtube_suite.infrastructure.persistence.app_models import AppJob
 from youtube_suite.infrastructure.persistence.studio_models import (
     StudioGeneratedDescription,
     StudioMediaAsset,
+    StudioSubtitleArtifact,
     StudioTranscriptSegment,
 )
 from youtube_suite.infrastructure.storage.local_storage import LocalFileStorage
@@ -54,6 +61,56 @@ async def upload_asset(
     session.commit()
     session.refresh(asset)
     return UploadResponse(asset_id=asset.id, filename=asset.filename, message="ok")
+
+
+@router.get("/assets", response_model=AssetListResponse)
+def list_assets(session: Session = Depends(get_db)) -> AssetListResponse:
+    """List all media assets with flags indicating available transcription, description and shorts."""
+    assets = session.scalars(
+        select(StudioMediaAsset).order_by(StudioMediaAsset.created_at.desc())
+    ).all()
+
+    items = []
+    for a in assets:
+        has_transcript = (
+            session.execute(
+                select(StudioTranscriptSegment.id)
+                .where(StudioTranscriptSegment.asset_id == a.id)
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+        has_description = (
+            session.execute(
+                select(StudioGeneratedDescription.id)
+                .where(StudioGeneratedDescription.asset_id == a.id)
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+        has_shorts = (
+            session.execute(
+                select(AppJob.id)
+                .where(AppJob.studio_asset_id == a.id, AppJob.job_type == "shorts", AppJob.status == "completed")
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+        items.append(
+            AssetListItem(
+                id=a.id,
+                filename=a.filename,
+                title=a.title,
+                duration_seconds=float(a.duration_seconds) if a.duration_seconds is not None else None,
+                market_video_id=a.market_video_id,
+                created_at=a.created_at,
+                has_transcript=has_transcript,
+                has_description=has_description,
+                has_shorts=has_shorts,
+            )
+        )
+
+    return AssetListResponse(total=len(items), assets=items)
 
 
 @router.post("/assets/{asset_id}/subtitles/run", response_model=SubtitleRunResponse)
@@ -111,6 +168,7 @@ def run_description(
         raise HTTPException(404, "asset not found")
 
     jid = create_description_job(session, asset_id)
+    _language = body.language
 
     def _job() -> None:
         from youtube_suite.infrastructure.persistence.session import get_session_factory
@@ -120,7 +178,7 @@ def run_description(
         try:
             with SessionLocal() as sess:
                 svc = StudioSubtitleService(sess)
-                svc.run_description_pipeline(asset_id=asset_id, job_id=jid)
+                svc.run_description_pipeline(asset_id=asset_id, job_id=jid, language=_language)
         except Exception:
             logger.exception("[%s] Description pipeline FAILED", jid)
 
@@ -204,3 +262,76 @@ def get_description(asset_id: uuid.UUID, session: Session = Depends(get_db)) -> 
     if row is None:
         raise HTTPException(404, "no description")
     return {"body": row.body, "model": row.model_name}
+
+
+@router.get("/assets/{asset_id}/video")
+def stream_video(asset_id: uuid.UUID, session: Session = Depends(get_db)) -> FileResponse:
+    """Stream the original uploaded video file."""
+    a = session.get(StudioMediaAsset, asset_id)
+    if a is None:
+        raise HTTPException(404, "asset not found")
+    storage = LocalFileStorage()
+    p = storage.path_for_key(a.storage_key)
+    if not p.exists():
+        raise HTTPException(404, "file missing on disk")
+    return FileResponse(
+        path=str(p),
+        media_type="video/mp4",
+        filename=a.filename,
+        headers={"Accept-Ranges": "bytes"},
+    )
+
+
+@router.get("/assets/{asset_id}/video/subtitled")
+def stream_subtitled_video(asset_id: uuid.UUID, session: Session = Depends(get_db)) -> FileResponse:
+    """Stream the burned-subtitle version of the video if it exists."""
+    a = session.get(StudioMediaAsset, asset_id)
+    if a is None:
+        raise HTTPException(404, "asset not found")
+
+    artifact = session.execute(
+        select(StudioSubtitleArtifact)
+        .where(StudioSubtitleArtifact.asset_id == asset_id)
+        .where(StudioSubtitleArtifact.burned_video_path.isnot(None))
+        .order_by(desc(StudioSubtitleArtifact.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if artifact is None:
+        raise HTTPException(404, "no subtitled video available")
+
+    p = Path(artifact.burned_video_path)
+    if not p.exists():
+        raise HTTPException(404, "subtitled file missing on disk")
+
+    return FileResponse(
+        path=str(p),
+        media_type="video/mp4",
+        filename=f"{a.title or a.filename}_subtitled.mp4",
+        headers={"Accept-Ranges": "bytes"},
+    )
+
+
+@router.get("/assets/{asset_id}/shorts", response_model=AssetShortsResponse)
+def get_asset_shorts(asset_id: uuid.UUID, session: Session = Depends(get_db)) -> AssetShortsResponse:
+    """Return clips from the most recent completed shorts job for this asset."""
+    a = session.get(StudioMediaAsset, asset_id)
+    if a is None:
+        raise HTTPException(404, "asset not found")
+
+    job = session.execute(
+        select(AppJob)
+        .where(AppJob.studio_asset_id == asset_id)
+        .where(AppJob.job_type == "shorts")
+        .where(AppJob.status == "completed")
+        .order_by(desc(AppJob.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if job is None:
+        raise HTTPException(404, "no completed shorts job for this asset")
+    if not job.result_json:
+        raise HTTPException(400, "shorts job has no result data")
+
+    clips = [ClipInfo(**c) for c in job.result_json.get("clips", [])]
+    return AssetShortsResponse(job_id=job.id, total_clips=len(clips), clips=clips)

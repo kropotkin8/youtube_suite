@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "gpt-4.1"
 
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-4-20260315"
+
     ffmpeg_path: str = "ffmpeg"
 
     hf_token: str | None = None
