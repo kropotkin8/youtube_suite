@@ -24,10 +24,17 @@ export const studioApi = {
     body: { model_size: string; language: string; chunk_minutes: number; overlap_seconds: number }
   ) => post<JobStartResult>(`/studio/assets/${id}/subtitles/run`, body),
 
-  runDescription: (id: string, body: { language: string }) =>
+  runDescription: (id: string, body: { language: string; provider: 'claude' | 'local' }) =>
     post<JobStartResult>(`/studio/assets/${id}/description/run`, body),
 
-  runShorts: (id: string) => post<JobStartResult>(`/studio/assets/${id}/shorts/run`),
+  runShorts: (id: string, body: { language: string; generate_vertical?: boolean; generate_titles?: boolean }) =>
+    post<JobStartResult>(`/studio/assets/${id}/shorts/run`, body),
+
+  rescoreShorts: (id: string, weights: Record<string, number>) =>
+    post<ShortsResult>(`/studio/assets/${id}/shorts/rescore`, { weights }),
+
+  generateClipTitle: (assetId: string, clipId: string) =>
+    post<{ clip_id: string; title: string; hashtags: string[] }>(`/studio/assets/${assetId}/clips/${clipId}/title`, {}),
 
   videoUrl: (id: string) => `/studio/assets/${id}/video`,
   subtitledVideoUrl: (id: string) => `/studio/assets/${id}/video/subtitled`,

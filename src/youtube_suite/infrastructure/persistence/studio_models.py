@@ -52,6 +52,7 @@ class StudioTranscriptSegment(Base):
     end_time: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     provenance: Mapped[str] = mapped_column(String(64), default="faster_whisper")
+    language: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     asset: Mapped[StudioMediaAsset] = relationship(back_populates="transcript_segments")
 
@@ -66,6 +67,7 @@ class StudioGeneratedDescription(Base):
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
     model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    language: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -83,6 +85,7 @@ class StudioSubtitleArtifact(Base):
     )
     srt_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     burned_video_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    language: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -38,6 +38,15 @@ export interface Description {
   model: string | null
 }
 
+export interface ScoreBreakdown {
+  semantic: number
+  audio_energy: number
+  speaker_change: number
+  hook_score: number
+  shortability: number
+  silence_ratio: number
+}
+
 export interface Clip {
   clip_id: string
   start: number
@@ -46,8 +55,14 @@ export interface Clip {
   text: string
   speaker: string | null
   score: number
+  score_breakdown: ScoreBreakdown | null
+  hook_type: 'question' | 'contradiction' | 'announcement' | null
+  title: string | null
+  hashtags: string[]
   path: string
   filename: string
+  vertical_path: string | null
+  vertical_filename: string | null
 }
 
 export interface ShortsResult {

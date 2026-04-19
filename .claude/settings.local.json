@@ -24,7 +24,9 @@
       "Read(//usr/local/bin/**)",
       "Bash(/usr/bin/npm install:*)",
       "Bash(/usr/bin/npx tailwindcss:*)",
-      "Bash(/usr/bin/npm run:*)"
+      "Bash(/usr/bin/npm run:*)",
+      "Bash(python *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

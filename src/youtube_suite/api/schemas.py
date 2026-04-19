@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,6 +53,10 @@ class SubtitleRunRequest(BaseModel):
 
 class DescriptionRunRequest(BaseModel):
     language: str = Field("es", description="BCP-47 language code for the description (e.g. 'es', 'en', 'fr')")
+    provider: Literal["claude", "local"] = Field(
+        "local",
+        description="LLM provider: 'local' (Ollama/Mistral) or 'claude' (Anthropic API)",
+    )
 
 
 class SubtitleRunResponse(BaseModel):
@@ -61,9 +65,21 @@ class SubtitleRunResponse(BaseModel):
     message: str
 
 
+class ShortsRunRequest(BaseModel):
+    language: str = "es"
+    generate_vertical: bool = False
+    generate_titles: bool = False
+
+
 class ShortsRunResponse(BaseModel):
     job_id: UUID
     message: str
+
+
+class RescoreRequest(BaseModel):
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {"shortability": 0.5, "semantic": 0.2, "hook": 0.15, "speaker_change": 0.15}
+    )
 
 
 class JobStatusResponse(BaseModel):
@@ -74,6 +90,15 @@ class JobStatusResponse(BaseModel):
     error: str | None = None
 
 
+class ScoreBreakdown(BaseModel):
+    semantic: float = 0.0
+    audio_energy: float = 0.0
+    speaker_change: float = 0.0
+    hook_score: float = 0.0
+    shortability: float = 0.0
+    silence_ratio: float = 0.0
+
+
 class ClipInfo(BaseModel):
     clip_id: str
     start: float
@@ -82,8 +107,14 @@ class ClipInfo(BaseModel):
     text: str
     speaker: str | None = None
     score: float
+    score_breakdown: ScoreBreakdown | None = None
+    hook_type: str | None = None
+    title: str | None = None
+    hashtags: list[str] = []
     path: str
     filename: str
+    vertical_path: str | None = None
+    vertical_filename: str | None = None
 
 
 class ClipsListResponse(BaseModel):

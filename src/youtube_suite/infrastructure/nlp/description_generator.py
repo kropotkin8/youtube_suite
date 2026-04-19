@@ -20,6 +20,42 @@ _LANGUAGE_NAMES: dict[str, str] = {
 }
 
 
+def _build_prompts(
+    transcript_text: str,
+    trending_keywords: Iterable[str] | None = None,
+    *,
+    title: str | None = None,
+    language: str = "es",
+) -> tuple[str, str]:
+    """Return (system_content, user_content) for the description generation prompt."""
+    language_name = _LANGUAGE_NAMES.get(language.lower(), language)
+    keywords_str = ", ".join(trending_keywords or [])
+
+    system_content = (
+        "You are an expert YouTube content strategist. "
+        "You write professional, engaging, and SEO-optimised video descriptions that look natural on YouTube. "
+        "Follow standard YouTube description structure: hook paragraph, key topics covered, relevant hashtags. "
+        "Never mention that the text comes from a transcript. Never copy transcript sentences verbatim."
+    )
+
+    user_content = f"Write a YouTube video description in {language_name} for the following video.\n\n"
+    if title:
+        user_content += f"Title: {title}\n\n"
+    if keywords_str:
+        user_content += f"Trending keywords to incorporate naturally: {keywords_str}\n\n"
+    user_content += (
+        f"Video transcript (use this as the content source — do not copy sentences verbatim):\n{transcript_text}\n\n"
+        "Requirements:\n"
+        "- Start with a compelling 2-3 sentence hook that summarises what viewers will learn or enjoy.\n"
+        "- List 4-6 key topics covered using bullet points (e.g. '• Topic one').\n"
+        "- End with 3-5 relevant hashtags.\n"
+        "- Integrate the trending keywords naturally where appropriate.\n"
+        f"- Write entirely in {language_name}. Do not translate or mix languages.\n"
+        "- Return only the final description text, ready to paste into YouTube."
+    )
+    return system_content, user_content
+
+
 def generate_video_description(
     transcript_text: str,
     trending_keywords: Iterable[str] | None = None,
@@ -45,30 +81,8 @@ def generate_video_description(
     if not s.anthropic_api_key:
         raise ValueError("ANTHROPIC_API_KEY not configured")
 
-    language_name = _LANGUAGE_NAMES.get(language.lower(), language)
-    keywords_str = ", ".join(trending_keywords or [])
-
-    system_content = (
-        "You are an expert YouTube content strategist. "
-        "You write professional, engaging, and SEO-optimised video descriptions that look natural on YouTube. "
-        "Follow standard YouTube description structure: hook paragraph, key topics covered, relevant hashtags. "
-        "Never mention that the text comes from a transcript. Never copy transcript sentences verbatim."
-    )
-
-    user_content = f"Write a YouTube video description in {language_name} for the following video.\n\n"
-    if title:
-        user_content += f"Title: {title}\n\n"
-    if keywords_str:
-        user_content += f"Trending keywords to incorporate naturally: {keywords_str}\n\n"
-    user_content += (
-        f"Video transcript (use this as the content source — do not copy sentences verbatim):\n{transcript_text}\n\n"
-        "Requirements:\n"
-        "- Start with a compelling 2-3 sentence hook that summarises what viewers will learn or enjoy.\n"
-        "- List 4-6 key topics covered using bullet points (e.g. '• Topic one').\n"
-        "- End with 3-5 relevant hashtags.\n"
-        "- Integrate the trending keywords naturally where appropriate.\n"
-        f"- Write entirely in {language_name}. Do not translate or mix languages.\n"
-        "- Return only the final description text, ready to paste into YouTube."
+    system_content, user_content = _build_prompts(
+        transcript_text, trending_keywords, title=title, language=language
     )
 
     client = anthropic.Anthropic(api_key=s.anthropic_api_key)

@@ -1,357 +1,301 @@
-"""Servicio para detectar momentos interesantes (highlights)"""
+"""Highlight detection — semantic segmentation + multi-feature scoring."""
+from __future__ import annotations
+
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import Any
+
 import numpy as np
-from sentence_transformers import SentenceTransformer, util
 import torch
+from sentence_transformers import SentenceTransformer, util
 
 from youtube_suite.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Modelo de embeddings global
-_embedding_model: SentenceTransformer = None
+_embedding_model: SentenceTransformer | None = None
 
 
 def get_embedding_model() -> SentenceTransformer:
-    """Obtiene o crea el modelo de embeddings (singleton)"""
     global _embedding_model
-    
     if _embedding_model is None:
         name = get_settings().embedding_model
-        logger.info(f"Cargando modelo de embeddings: {name}")
+        logger.info("Loading embedding model: %s", name)
         _embedding_model = SentenceTransformer(name)
-        logger.info("Modelo de embeddings cargado")
-    
     return _embedding_model
 
 
+# ---------------------------------------------------------------------------
+# Semantic segmentation
+# ---------------------------------------------------------------------------
+
 def generate_candidate_segments(
-    transcription_segments: List[Dict[str, Any]],
-    min_duration: float = None,
-    max_duration: float = None,
-    target_duration: float = None
-) -> List[Dict[str, Any]]:
-    """
-    Genera segmentos candidatos a partir de la transcripción
-    
-    Args:
-        transcription_segments: Segmentos de transcripción
-        min_duration: Duración mínima del clip
-        max_duration: Duración máxima del clip
-        target_duration: Duración objetivo del clip
-    
-    Returns:
-        Lista de segmentos candidatos
+    transcription_segments: list[dict[str, Any]],
+    min_duration: float | None = None,
+    max_duration: float | None = None,
+    target_duration: float | None = None,
+) -> list[dict[str, Any]]:
+    """Segment transcript into candidates using semantic coherence + duration constraints.
+
+    Uses cosine-similarity between adjacent segment embeddings to detect topic
+    boundaries instead of naively grouping by elapsed time.
     """
     s = get_settings()
-    min_duration = min_duration or s.min_clip_duration
-    max_duration = max_duration or s.max_clip_duration
-    target_duration = target_duration or s.target_clip_duration
-    
-    candidates = []
-    
-    # Estrategia: crear segmentos que agrupen oraciones completas
-    current_segment = None
-    
-    for seg in transcription_segments:
-        if current_segment is None:
-            current_segment = {
-                "text": seg["text"],
-                "start": seg["start"],
-                "end": seg["end"],
-                "words": seg.get("words", []),
-                "speaker": seg.get("speaker")
-            }
-        else:
-            # Agregar segmento actual
-            current_segment["text"] += " " + seg["text"]
-            current_segment["end"] = seg["end"]
-            if seg.get("words"):
-                current_segment["words"].extend(seg["words"])
-        
-        duration = current_segment["end"] - current_segment["start"]
-        
-        # Si alcanzamos la duración objetivo o máxima, crear candidato
-        if duration >= target_duration or duration >= max_duration:
-            if duration >= min_duration:
-                candidates.append(current_segment.copy())
-            current_segment = None
-    
-    # Agregar último segmento si existe y cumple requisitos
-    if current_segment:
-        duration = current_segment["end"] - current_segment["start"]
-        if duration >= min_duration:
-            candidates.append(current_segment)
-    
-    logger.info(f"Generados {len(candidates)} segmentos candidatos")
+    min_dur = min_duration or s.min_clip_duration
+    max_dur = max_duration or s.max_clip_duration
+    target_dur = target_duration or s.target_clip_duration
+
+    if not transcription_segments:
+        return []
+
+    model = get_embedding_model()
+
+    texts = [seg["text"].strip() for seg in transcription_segments]
+    embeddings = model.encode(texts, convert_to_tensor=True, show_progress_bar=False)
+
+    # Compute cosine similarity between consecutive segments
+    boundary_flags = [False]  # first segment never starts a new boundary by default
+    for i in range(1, len(transcription_segments)):
+        sim = util.cos_sim(embeddings[i - 1], embeddings[i]).item()
+        # A drop below 0.35 signals a topic shift
+        boundary_flags.append(sim < 0.35)
+
+    # Group segments separated by boundaries into candidate windows
+    raw_groups: list[list[dict]] = []
+    current: list[dict] = []
+    for seg, is_boundary in zip(transcription_segments, boundary_flags):
+        if is_boundary and current:
+            raw_groups.append(current)
+            current = []
+        current.append(seg)
+    if current:
+        raw_groups.append(current)
+
+    # Convert groups → candidate dicts respecting min/max duration
+    candidates: list[dict[str, Any]] = []
+    for group in raw_groups:
+        candidates.extend(_split_group(group, min_dur, max_dur, target_dur))
+
+    logger.info("Generated %d candidate segments (semantic segmentation)", len(candidates))
     return candidates
 
 
-def calculate_semantic_score(
-    candidate_text: str,
-    full_transcript: str,
-    embedding_model: SentenceTransformer
-) -> float:
-    """
-    Calcula score semántico: qué tan representativo es el segmento del contenido total
-    
-    Args:
-        candidate_text: Texto del candidato
-        full_transcript: Transcripción completa
-        embedding_model: Modelo de embeddings
-    
-    Returns:
-        Score semántico (0.0 a 1.0)
-    """
+def _split_group(
+    segs: list[dict],
+    min_dur: float,
+    max_dur: float,
+    target_dur: float,
+) -> list[dict]:
+    """Split a semantically coherent group into chunks that respect duration limits."""
+    result = []
+    current_segs: list[dict] = []
+    current_start = segs[0]["start"]
+
+    for seg in segs:
+        current_segs.append(seg)
+        elapsed = seg["end"] - current_start
+
+        if elapsed >= target_dur or elapsed >= max_dur:
+            if elapsed >= min_dur:
+                result.append(_merge_segs(current_segs))
+            current_segs = []
+            current_start = seg["end"]
+
+    if current_segs:
+        elapsed = current_segs[-1]["end"] - current_start
+        if elapsed >= min_dur:
+            result.append(_merge_segs(current_segs))
+
+    return result
+
+
+def _merge_segs(segs: list[dict]) -> dict:
+    words: list = []
+    for s in segs:
+        words.extend(s.get("words", []))
+    return {
+        "text": " ".join(s["text"] for s in segs),
+        "start": segs[0]["start"],
+        "end": segs[-1]["end"],
+        "words": words,
+        "speaker": segs[0].get("speaker"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+
+def _semantic_score(candidate_text: str, full_transcript: str, model: SentenceTransformer) -> float:
     try:
-        # Embeddings
-        candidate_emb = embedding_model.encode(candidate_text, convert_to_tensor=True)
-        
-        # Embedding del documento completo (promedio de chunks)
-        # Dividir en chunks para evitar límites de longitud
+        cand_emb = model.encode(candidate_text, convert_to_tensor=True)
         chunk_size = 500
-        chunks = [full_transcript[i:i+chunk_size] for i in range(0, len(full_transcript), chunk_size)]
-        chunk_embs = embedding_model.encode(chunks, convert_to_tensor=True)
+        chunks = [full_transcript[i: i + chunk_size] for i in range(0, len(full_transcript), chunk_size)]
+        chunk_embs = model.encode(chunks, convert_to_tensor=True)
         doc_emb = torch.mean(chunk_embs, dim=0)
-        
-        # Similitud coseno
-        similarity = util.cos_sim(candidate_emb.unsqueeze(0), doc_emb.unsqueeze(0)).item()
-        
-        # Normalizar a 0-1 (cosine similarity ya está en -1 a 1, ajustamos a 0-1)
-        score = (similarity + 1) / 2
-        
-        return float(score)
+        sim = util.cos_sim(cand_emb.unsqueeze(0), doc_emb.unsqueeze(0)).item()
+        return float((sim + 1) / 2)
     except Exception as e:
-        logger.warning(f"Error calculando score semántico: {str(e)}")
-        return 0.5  # Score neutral
-
-
-def calculate_energy_score(words: List[Dict[str, Any]]) -> float:
-    """
-    Calcula score basado en energía (aproximación: longitud de palabras, exclamaciones)
-    
-    Args:
-        words: Lista de palabras con timestamps
-    
-    Returns:
-        Score de energía (0.0 a 1.0)
-    """
-    if not words:
+        logger.warning("semantic_score error: %s", e)
         return 0.5
-    
-    # Detectar exclamaciones, palabras en mayúsculas, palabras largas
-    exclamation_count = sum(1 for w in words if "!" in w.get("word", ""))
-    caps_count = sum(1 for w in words if w.get("word", "").isupper() and len(w.get("word", "")) > 1)
-    
-    # Normalizar
-    total_words = len(words)
-    exclamation_ratio = exclamation_count / total_words if total_words > 0 else 0
-    caps_ratio = caps_count / total_words if total_words > 0 else 0
-    
-    # Score combinado
-    score = min(1.0, (exclamation_ratio * 2 + caps_ratio) / 2)
-    
-    return float(score)
 
 
-def calculate_speaker_change_score(
-    candidate: Dict[str, Any],
-    all_segments: List[Dict[str, Any]]
-) -> float:
-    """
-    Calcula score basado en cambios de locutor (momentos de diálogo)
-    
-    Args:
-        candidate: Segmento candidato
-        all_segments: Todos los segmentos de transcripción
-    
-    Returns:
-        Score de cambio de locutor (0.0 a 1.0)
-    """
+def _speaker_change_score(candidate: dict, all_segs: list[dict]) -> float:
     if not candidate.get("speaker"):
-        return 0.3  # Score bajo si no hay información de speaker
-    
-    # Buscar segmentos adyacentes con diferentes speakers
-    candidate_start = candidate["start"]
-    candidate_end = candidate["end"]
-    
-    # Buscar segmentos justo antes y después
-    before_speakers = set()
-    after_speakers = set()
-    
-    for seg in all_segments:
-        if seg["end"] <= candidate_start and abs(seg["end"] - candidate_start) < 3.0:
-            if seg.get("speaker"):
-                before_speakers.add(seg["speaker"])
-        elif seg["start"] >= candidate_end and abs(seg["start"] - candidate_end) < 3.0:
-            if seg.get("speaker"):
-                after_speakers.add(seg["speaker"])
-    
-    # Si hay cambio de speaker, score alto
-    if before_speakers and candidate.get("speaker") not in before_speakers:
+        return 0.3
+    cs, ce = candidate["start"], candidate["end"]
+    before = {s["speaker"] for s in all_segs if s["end"] <= cs and abs(s["end"] - cs) < 3 and s.get("speaker")}
+    after = {s["speaker"] for s in all_segs if s["start"] >= ce and abs(s["start"] - ce) < 3 and s.get("speaker")}
+    if (before and candidate["speaker"] not in before) or (after and candidate["speaker"] not in after):
         return 1.0
-    if after_speakers and candidate.get("speaker") not in after_speakers:
-        return 1.0
-    
     return 0.5
 
 
-def calculate_keyword_score(candidate_text: str) -> float:
-    """
-    Calcula score basado en palabras clave (keywords importantes)
-    
-    Args:
-        candidate_text: Texto del candidato
-    
-    Returns:
-        Score de keywords (0.0 a 1.0)
-    """
-    # Palabras clave comunes en podcasts (ajustar según necesidad)
-    keywords = [
-        "importante", "clave", "mejor", "peor", "increíble", "sorprendente",
-        "revelación", "descubrimiento", "conclusión", "resumen", "finalmente",
-        "no lo vas a creer", "esto es", "lo mejor de", "lo peor de"
-    ]
-    
-    text_lower = candidate_text.lower()
-    matches = sum(1 for kw in keywords if kw in text_lower)
-    
-    # Normalizar (máximo 3 matches = score 1.0)
-    score = min(1.0, matches / 3.0)
-    
-    return float(score)
-
-
-def calculate_sentiment_score(candidate_text: str) -> float:
-    """
-    Calcula score basado en sentimiento (aproximación simple)
-    
-    Args:
-        candidate_text: Texto del candidato
-    
-    Returns:
-        Score de sentimiento (0.0 a 1.0)
-    """
-    # Palabras positivas/emocionales
-    positive_words = [
-        "genial", "excelente", "fantástico", "increíble", "sorprendente",
-        "emocionante", "interesante", "fascinante", "impresionante"
-    ]
-    
-    text_lower = candidate_text.lower()
-    positive_count = sum(1 for word in positive_words if word in text_lower)
-    
-    # Normalizar
-    score = min(1.0, positive_count / 2.0)
-    
-    return float(score)
-
-
 def score_candidates(
-    candidates: List[Dict[str, Any]],
-    full_transcript: str
-) -> List[Dict[str, Any]]:
+    candidates: list[dict[str, Any]],
+    full_transcript: str,
+    audio_path: str | None = None,
+    audio_duration: float = 0.0,
+    language: str = "es",
+) -> list[dict[str, Any]]:
+    """Score candidates using ShortabilityScorer + semantic + hook + speaker-change.
+
+    Each candidate gains:
+        score: float (final weighted score)
+        score_breakdown: {semantic, audio_energy, speaker_change, hook_score, shortability}
+        hook_type: str | None
     """
-    Calcula scores para todos los candidatos y los ordena
-    
-    Args:
-        candidates: Lista de candidatos
-        full_transcript: Transcripción completa
-    
-    Returns:
-        Lista de candidatos con scores calculados, ordenados por score descendente
-    """
-    embedding_model = get_embedding_model()
+    from youtube_suite.infrastructure.ml.shorts import hook_detector, shortability_scorer
+    from youtube_suite.infrastructure.ml.shorts.audio_service import analyze_audio_features
+
+    model = get_embedding_model()
     w = get_settings().score_weights
 
-    scored_candidates = []
+    scored = []
+    for cand in candidates:
+        words = cand.get("words", [])
+        text = cand["text"]
+        start, end = cand["start"], cand["end"]
+        duration = end - start
 
-    for candidate in candidates:
-        # Calcular cada componente del score
-        semantic_score = calculate_semantic_score(
-            candidate["text"],
-            full_transcript,
-            embedding_model
+        # --- Semantic ---
+        sem = _semantic_score(text, full_transcript, model)
+
+        # --- Speaker change ---
+        spk = _speaker_change_score(cand, candidates)
+
+        # --- Hook ---
+        hook_info = hook_detector.detect(text, language=language)
+        hook_score = hook_info["hook_score"]
+        hook_type = hook_info["hook_type"]
+
+        # --- Real audio features ---
+        if audio_path:
+            audio_feats = analyze_audio_features(audio_path, start, end)
+        else:
+            audio_feats = {"rms_energy": 0.5, "zcr_mean": 0.5, "spectral_centroid": 0.5, "silence_ratio": 0.3}
+
+        # --- Speech rate (words/second, normalised) ---
+        word_count = len(words) if words else len(text.split())
+        speech_rate = float(np.clip(word_count / max(duration, 1) / 4, 0, 1))
+
+        # --- Segment position in video ---
+        position = float(start / audio_duration) if audio_duration > 0 else 0.5
+
+        # --- Discrete counts ---
+        question_marks = min(text.count("?"), 3)
+        exclamations = min(text.count("!"), 3)
+        speaker_changes = sum(
+            1 for i in range(1, len(words))
+            if words[i].get("speaker") != words[i - 1].get("speaker")
+        ) if len(words) > 1 else 0
+
+        # --- ShortabilityScorer ---
+        features = {
+            **audio_feats,
+            "speech_rate": speech_rate,
+            "semantic_score": sem,
+            "segment_position": position,
+            "segment_duration": duration,
+            "speaker_changes": speaker_changes,
+            "question_marks": question_marks,
+            "exclamations": exclamations,
+            "hook_score": hook_score,
+        }
+        shortability = shortability_scorer.predict(features)
+
+        # --- Final weighted score ---
+        total = (
+            w["shortability"] * shortability
+            + w["semantic"] * sem
+            + w["hook"] * hook_score
+            + w["speaker_change"] * spk
         )
-        
-        energy_score = calculate_energy_score(candidate.get("words", []))
-        
-        speaker_change_score = calculate_speaker_change_score(
-            candidate,
-            candidates  # Usar todos los candidatos como contexto
-        )
-        
-        keyword_score = calculate_keyword_score(candidate["text"])
-        
-        sentiment_score = calculate_sentiment_score(candidate["text"])
-        
-        # Score combinado con pesos
-        total_score = (
-            w["semantic"] * semantic_score
-            + w["energy"] * energy_score
-            + w["speaker_change"] * speaker_change_score
-            + w["keyword"] * keyword_score
-            + w["sentiment"] * sentiment_score
-        )
-        
-        scored_candidates.append({
-            **candidate,
-            "score": total_score,
+
+        scored.append({
+            **cand,
+            "score": float(total),
             "score_breakdown": {
-                "semantic": semantic_score,
-                "energy": energy_score,
-                "speaker_change": speaker_change_score,
-                "keyword": keyword_score,
-                "sentiment": sentiment_score
-            }
+                "semantic": round(sem, 4),
+                "audio_energy": round(audio_feats["rms_energy"], 4),
+                "speaker_change": round(spk, 4),
+                "hook_score": round(hook_score, 4),
+                "shortability": round(shortability, 4),
+                "silence_ratio": round(audio_feats["silence_ratio"], 4),
+            },
+            "hook_type": hook_type,
         })
-    
-    # Ordenar por score descendente
-    scored_candidates.sort(key=lambda x: x["score"], reverse=True)
-    
-    logger.info(f"Scores calculados para {len(scored_candidates)} candidatos")
-    
-    return scored_candidates
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    logger.info("Scored %d candidates", len(scored))
+    return scored
 
 
 def select_top_clips(
-    scored_candidates: List[Dict[str, Any]],
-    num_clips: int = None
-) -> List[Dict[str, Any]]:
-    """
-    Selecciona los mejores clips evitando solapamientos
-    
-    Args:
-        scored_candidates: Candidatos con scores, ordenados
-        num_clips: Número de clips a seleccionar
-    
-    Returns:
-        Lista de clips seleccionados
-    """
+    scored_candidates: list[dict[str, Any]],
+    num_clips: int | None = None,
+) -> list[dict[str, Any]]:
+    """Select top N non-overlapping clips (5s margin between clips)."""
     num_clips = num_clips or get_settings().num_clips
+    selected: list[dict] = []
+    used: list[tuple[float, float]] = []
 
-    selected = []
-    used_times = []  # Para evitar solapamientos
-    
-    for candidate in scored_candidates:
+    for cand in scored_candidates:
         if len(selected) >= num_clips:
             break
-        
-        start = candidate["start"]
-        end = candidate["end"]
-        
-        # Verificar solapamiento (margen de 5 segundos)
-        overlap = False
-        for used_start, used_end in used_times:
-            if not (end < used_start - 5 or start > used_end + 5):
-                overlap = True
-                break
-        
-        if not overlap:
-            selected.append(candidate)
-            used_times.append((start, end))
-    
-    logger.info(f"Seleccionados {len(selected)} clips de {len(scored_candidates)} candidatos")
+        start, end = cand["start"], cand["end"]
+        if any(not (end < us - 5 or start > ue + 5) for us, ue in used):
+            continue
+        selected.append(cand)
+        used.append((start, end))
+
+    logger.info("Selected %d / %d candidates", len(selected), len(scored_candidates))
     return selected
 
+
+def rescore_with_weights(
+    clips: list[dict[str, Any]],
+    weights: dict[str, float],
+) -> list[dict[str, Any]]:
+    """Re-weight existing scored clips without re-running the pipeline.
+
+    Expects each clip to have a ``score_breakdown`` dict.
+    Returns clips re-sorted by new total score.
+    """
+    w_short = weights.get("shortability", 0.5)
+    w_sem = weights.get("semantic", 0.2)
+    w_hook = weights.get("hook", 0.1)
+    w_spk = weights.get("speaker_change", 0.1)
+
+    rescored = []
+    for clip in clips:
+        bd = clip.get("score_breakdown", {})
+        total = (
+            w_short * bd.get("shortability", 0.5)
+            + w_sem * bd.get("semantic", 0.5)
+            + w_hook * bd.get("hook_score", 0.0)
+            + w_spk * bd.get("speaker_change", 0.3)
+        )
+        rescored.append({**clip, "score": float(total)})
+
+    rescored.sort(key=lambda x: x["score"], reverse=True)
+    return rescored

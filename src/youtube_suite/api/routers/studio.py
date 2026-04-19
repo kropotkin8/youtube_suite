@@ -17,6 +17,9 @@ from youtube_suite.api.schemas import (
     AssetShortsResponse,
     ClipInfo,
     DescriptionRunRequest,
+    RescoreRequest,
+    ScoreBreakdown,
+    ShortsRunRequest,
     ShortsRunResponse,
     SubtitleRunRequest,
     SubtitleRunResponse,
@@ -91,7 +94,7 @@ def list_assets(session: Session = Depends(get_db)) -> AssetListResponse:
         has_shorts = (
             session.execute(
                 select(AppJob.id)
-                .where(AppJob.studio_asset_id == a.id, AppJob.job_type == "shorts", AppJob.status == "completed")
+                .where(AppJob.studio_asset_id == a.id, AppJob.job_type == "shorts_generation", AppJob.status == "completed")
                 .limit(1)
             ).scalar_one_or_none()
             is not None
@@ -169,16 +172,17 @@ def run_description(
 
     jid = create_description_job(session, asset_id)
     _language = body.language
+    _provider = body.provider
 
     def _job() -> None:
         from youtube_suite.infrastructure.persistence.session import get_session_factory
 
-        logger.info("[%s] Description pipeline started for asset %s", jid, asset_id)
+        logger.info("[%s] Description pipeline started for asset %s (provider=%s)", jid, asset_id, _provider)
         SessionLocal = get_session_factory()
         try:
             with SessionLocal() as sess:
                 svc = StudioSubtitleService(sess)
-                svc.run_description_pipeline(asset_id=asset_id, job_id=jid, language=_language)
+                svc.run_description_pipeline(asset_id=asset_id, job_id=jid, language=_language, provider=_provider)
         except Exception:
             logger.exception("[%s] Description pipeline FAILED", jid)
 
@@ -189,6 +193,7 @@ def run_description(
 @router.post("/assets/{asset_id}/shorts/run", response_model=ShortsRunResponse)
 def run_shorts(
     asset_id: uuid.UUID,
+    body: ShortsRunRequest,
     background_tasks: BackgroundTasks,
     session: Session = Depends(get_db),
 ) -> ShortsRunResponse:
@@ -201,15 +206,25 @@ def run_shorts(
     if not video_path.exists():
         raise HTTPException(400, "file missing")
     jid = create_shorts_job(session, asset_id, video_path)
+    _language = body.language
+
+    _vertical = body.generate_vertical
+    _titles = body.generate_titles
 
     def _work() -> None:
         from youtube_suite.infrastructure.persistence.session import get_session_factory
 
-        logger.info("[%s] Shorts pipeline started for asset %s", jid, asset_id)
+        logger.info("[%s] Shorts pipeline started for asset %s (language=%s, vertical=%s, titles=%s)",
+                    jid, asset_id, _language, _vertical, _titles)
         SessionLocal = get_session_factory()
         try:
             with SessionLocal() as sess:
-                run_shorts_pipeline(sess, jid, video_path)
+                run_shorts_pipeline(
+                    sess, jid, video_path,
+                    language=_language,
+                    generate_vertical=_vertical,
+                    generate_titles=_titles,
+                )
             logger.info("[%s] Shorts pipeline complete", jid)
         except Exception:
             logger.exception("[%s] Shorts pipeline FAILED", jid)
@@ -217,6 +232,72 @@ def run_shorts(
 
     background_tasks.add_task(_work)
     return ShortsRunResponse(job_id=jid, message="shorts pipeline started")
+
+
+@router.post("/assets/{asset_id}/shorts/rescore", response_model=AssetShortsResponse)
+def rescore_shorts(
+    asset_id: uuid.UUID,
+    body: RescoreRequest,
+    session: Session = Depends(get_db),
+) -> AssetShortsResponse:
+    """Re-weight existing clip scores without re-running the pipeline."""
+    from youtube_suite.infrastructure.ml.shorts.highlights_service import rescore_with_weights
+
+    job = session.execute(
+        select(AppJob)
+        .where(AppJob.studio_asset_id == asset_id)
+        .where(AppJob.job_type == "shorts_generation")
+        .where(AppJob.status == "completed")
+        .order_by(desc(AppJob.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if job is None:
+        raise HTTPException(404, "no completed shorts job for this asset")
+    if not job.result_json:
+        raise HTTPException(400, "shorts job has no result data")
+
+    raw_clips = job.result_json.get("clips", [])
+    rescored = rescore_with_weights(raw_clips, body.weights)
+    clips = [ClipInfo(**c) for c in rescored]
+    return AssetShortsResponse(job_id=job.id, total_clips=len(clips), clips=clips)
+
+
+@router.post("/assets/{asset_id}/clips/{clip_id}/title")
+def generate_clip_title_endpoint(
+    asset_id: uuid.UUID,
+    clip_id: str,
+    session: Session = Depends(get_db),
+) -> dict:
+    """Generate a viral title and hashtags for a specific clip via LLM."""
+    from youtube_suite.infrastructure.nlp.clip_titler import generate_clip_title
+
+    job = session.execute(
+        select(AppJob)
+        .where(AppJob.studio_asset_id == asset_id)
+        .where(AppJob.job_type == "shorts_generation")
+        .where(AppJob.status == "completed")
+        .order_by(desc(AppJob.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if job is None:
+        raise HTTPException(404, "no completed shorts job for this asset")
+
+    clip = next((c for c in job.result_json.get("clips", []) if c["clip_id"] == clip_id), None)
+    if clip is None:
+        raise HTTPException(404, f"clip {clip_id} not found")
+
+    try:
+        result = generate_clip_title(
+            clip["text"],
+            language=job.result_json.get("transcription", {}).get("language", "es"),
+            hook_type=clip.get("hook_type"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    return {"clip_id": clip_id, **result}
 
 
 @router.get("/assets/{asset_id}")
@@ -322,7 +403,7 @@ def get_asset_shorts(asset_id: uuid.UUID, session: Session = Depends(get_db)) ->
     job = session.execute(
         select(AppJob)
         .where(AppJob.studio_asset_id == asset_id)
-        .where(AppJob.job_type == "shorts")
+        .where(AppJob.job_type == "shorts_generation")
         .where(AppJob.status == "completed")
         .order_by(desc(AppJob.created_at))
         .limit(1)

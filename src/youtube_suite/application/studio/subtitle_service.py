@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from youtube_suite.infrastructure.media.subtitle_embedder import embed_subtitles
 from youtube_suite.infrastructure.media.subtitle_generator import TranscriptSegment, segments_to_srt
 from youtube_suite.infrastructure.ml.faster_whisper_transcriber import FasterWhisperTranscriber
 from youtube_suite.infrastructure.nlp.description_generator import generate_video_description
+from youtube_suite.infrastructure.nlp.local_description_generator import generate_video_description_local
 from youtube_suite.infrastructure.persistence.app_models import AppJob
 from youtube_suite.infrastructure.persistence.studio_models import (
     StudioGeneratedDescription,
@@ -190,6 +192,7 @@ class StudioSubtitleService:
                         end_time=seg.end,
                         text=t,
                         provenance="faster_whisper",
+                        language=language,
                     )
                 )
             self.session.add(
@@ -197,6 +200,7 @@ class StudioSubtitleService:
                     asset_id=asset_id,
                     srt_path=str(srt_path),
                     burned_video_path=str(final_video_path),
+                    language=language,
                 )
             )
             self.session.commit()
@@ -218,7 +222,13 @@ class StudioSubtitleService:
             if chunk_job_dir.exists():
                 shutil.rmtree(chunk_job_dir, ignore_errors=True)
 
-    def run_description_pipeline(self, asset_id: uuid.UUID, job_id: uuid.UUID, language: str = "es") -> None:
+    def run_description_pipeline(
+        self,
+        asset_id: uuid.UUID,
+        job_id: uuid.UUID,
+        language: str = "es",
+        provider: str = "local",
+    ) -> None:
         """Generate an OpenAI SEO description from persisted transcript segments.
 
         Does not require the original video file — reads from ``studio.transcript_segments``.
@@ -232,6 +242,7 @@ class StudioSubtitleService:
         if asset is None:
             raise ValueError(f"media asset {asset_id} not found")
 
+        t0 = time.perf_counter()
         try:
             _update_job(self.session, job, "processing", 0.10, "Cargando segmentos de transcripción…")
             segments = (
@@ -243,23 +254,31 @@ class StudioSubtitleService:
             if not segments:
                 raise ValueError("No hay segmentos de transcripción para este asset. Ejecuta primero el pipeline de subtítulos.")
 
+            logger.info("[%s] Loaded %d transcript segments (%d chars)", job_id, len(segments), sum(len(s.text) for s in segments))
             full_text = " ".join(seg.text for seg in segments)
 
             _update_job(self.session, job, "processing", 0.25, "Obteniendo keywords de tendencia…")
             trending = get_trending_keywords(self.session)
 
-            _update_job(self.session, job, "processing", 0.30, "Generando descripción con OpenAI…")
-            try:
+            _update_job(self.session, job, "processing", 0.30, "Generando descripción…")
+            t_llm = time.perf_counter()
+            if provider == "claude":
                 body = generate_video_description(
                     full_text,
                     trending_keywords=trending,
                     title=asset.title or "",
                     language=language,
                 )
-                logger.info("[%s] Description generated (%d chars)", job_id, len(body))
-            except Exception as exc:
-                logger.warning("[%s] OpenAI description failed: %s", job_id, exc)
-                body = full_text[:2000]
+                model_name = "claude"
+            else:
+                body = generate_video_description_local(
+                    full_text,
+                    trending_keywords=trending,
+                    title=asset.title or "",
+                    language=language,
+                )
+                model_name = get_settings().local_llm_model
+            logger.info("[%s] Description generated via %s (%.1fs, %d chars)", job_id, provider, time.perf_counter() - t_llm, len(body))
 
             _update_job(self.session, job, "processing", 0.90, "Guardando descripción…")
             existing = self.session.execute(
@@ -267,16 +286,19 @@ class StudioSubtitleService:
             ).scalar_one_or_none()
             if existing is not None:
                 existing.body = body
-                existing.model_name = "openai"
+                existing.model_name = model_name
+                existing.language = language
             else:
                 self.session.add(
-                    StudioGeneratedDescription(asset_id=asset_id, body=body, model_name="openai")
+                    StudioGeneratedDescription(asset_id=asset_id, body=body, model_name=model_name, language=language)
                 )
             self.session.commit()
 
             _update_job(self.session, job, "completed", 1.0, "Descripción generada")
+            logger.info("[%s] Description pipeline COMPLETED — model=%s, total elapsed %.1fs", job_id, model_name, time.perf_counter() - t0)
 
         except Exception as exc:
-            logger.exception("[%s] Description pipeline FAILED", job_id)
+            elapsed = time.perf_counter() - t0
+            logger.exception("[%s] Description pipeline FAILED after %.1fs: %s", job_id, elapsed, exc)
             _update_job(self.session, job, "failed", job.progress, error=str(exc))
             raise

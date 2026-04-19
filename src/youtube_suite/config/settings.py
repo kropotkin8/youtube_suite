@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-sonnet-4-20260315"
 
+    local_llm_model: str = "mistral"
+    local_llm_base_url: str = "http://localhost:11434"
+
     ffmpeg_path: str = "ffmpeg"
 
     hf_token: str | None = None
@@ -31,11 +34,11 @@ class Settings(BaseSettings):
     target_clip_duration: float = 15.0
     num_clips: int = 5
 
-    score_semantic: float = 0.4
-    score_energy: float = 0.2
+    # Scoring weights (must sum to 1.0)
+    score_shortability: float = 0.50
+    score_semantic: float = 0.20
+    score_hook: float = 0.15
     score_speaker_change: float = 0.15
-    score_keyword: float = 0.15
-    score_sentiment: float = 0.1
 
     embedding_model: str = "all-mpnet-base-v2"
     audio_sample_rate: int = 16000
@@ -46,11 +49,10 @@ class Settings(BaseSettings):
     @property
     def score_weights(self) -> dict[str, float]:
         return {
+            "shortability": self.score_shortability,
             "semantic": self.score_semantic,
-            "energy": self.score_energy,
+            "hook": self.score_hook,
             "speaker_change": self.score_speaker_change,
-            "keyword": self.score_keyword,
-            "sentiment": self.score_sentiment,
         }
 
 
@@ -67,4 +69,5 @@ def get_settings() -> Settings:
     (s.cip_data_dir / "audio").mkdir(exist_ok=True)
     (s.cip_data_dir / "clips").mkdir(exist_ok=True)
     (s.cip_data_dir / "metadata").mkdir(exist_ok=True)
+    (s.cip_data_dir / "models").mkdir(exist_ok=True)
     return s
