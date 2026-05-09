@@ -44,8 +44,14 @@ def generate_video_description_local(
         )
         return response.message.content.strip()
     except Exception as exc:
-        if "connection" in str(exc).lower() or "refused" in str(exc).lower():
+        msg = str(exc).lower()
+        if "connection" in msg or "refused" in msg:
             raise RuntimeError(
                 f"Ollama not reachable at {s.local_llm_base_url}. Run `ollama serve` first."
+            ) from exc
+        if "not found" in msg or "404" in msg:
+            raise RuntimeError(
+                f"Ollama model '{s.local_llm_model}' is not installed. "
+                f"Run `ollama pull {s.local_llm_model}` then retry."
             ) from exc
         raise

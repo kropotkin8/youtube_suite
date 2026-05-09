@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-sonnet-4-20260315"
 
-    local_llm_model: str = "mistral"
+    local_llm_model: str = "llama3.2"
     local_llm_base_url: str = "http://localhost:11434"
 
     ffmpeg_path: str = "ffmpeg"
