@@ -5,6 +5,7 @@ import { ActionButtons } from './ActionButtons'
 import { TranscriptPreview } from './TranscriptPreview'
 import { DescriptionPanel } from './DescriptionPanel'
 import { ShortsModal } from './ShortsModal'
+import { ChaptersPanel } from './ChaptersPanel'
 import { JobWatcher } from './JobWatcher'
 
 interface Props {
@@ -100,6 +101,9 @@ export function AssetDetail({ asset, onRefresh }: Props) {
           <ShortsModal assetId={liveAsset.id} hasShorts={liveAsset.has_shorts} />
         </div>
       )}
+
+      {/* Chapters */}
+      <ChaptersPanel assetId={liveAsset.id} hasChapters={liveAsset.has_chapters} />
     </div>
   )
 }

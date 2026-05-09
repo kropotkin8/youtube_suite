@@ -2,6 +2,7 @@ import { get, post } from './client'
 import type {
   Asset,
   AssetListResponse,
+  ChaptersResponse,
   Description,
   JobStartResult,
   ShortsResult,
@@ -35,6 +36,12 @@ export const studioApi = {
 
   generateClipTitle: (assetId: string, clipId: string) =>
     post<{ clip_id: string; title: string; hashtags: string[] }>(`/studio/assets/${assetId}/clips/${clipId}/title`, {}),
+
+  runChapters: (id: string) =>
+    post<JobStartResult>(`/studio/assets/${id}/chapters/run`, {}),
+
+  getChapters: (id: string) =>
+    get<ChaptersResponse>(`/studio/assets/${id}/chapters`),
 
   videoUrl: (id: string) => `/studio/assets/${id}/video`,
   subtitledVideoUrl: (id: string) => `/studio/assets/${id}/video/subtitled`,

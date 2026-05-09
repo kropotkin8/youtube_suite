@@ -15,14 +15,25 @@ from youtube_suite.api.schemas import (
     AssetListItem,
     AssetListResponse,
     AssetShortsResponse,
+    ChapterInfo,
     ClipInfo,
+    ClusterInfo,
+    CommentIntelligenceResponse,
+    CommentIntelligenceResult,
+    CommentIntelligenceRunResponse,
     DescriptionRunRequest,
     RescoreRequest,
     ScoreBreakdown,
+    SentimentDistribution,
     ShortsRunRequest,
     ShortsRunResponse,
+    SmartChaptersResponse,
+    SmartChaptersResult,
+    SmartChaptersRunResponse,
     SubtitleRunRequest,
     SubtitleRunResponse,
+    TopicItem,
+    UnansweredQuestion,
     UploadResponse,
 )
 from youtube_suite.application.shorts.shorts_service import (
@@ -99,6 +110,14 @@ def list_assets(session: Session = Depends(get_db)) -> AssetListResponse:
             ).scalar_one_or_none()
             is not None
         )
+        has_chapters = (
+            session.execute(
+                select(AppJob.id)
+                .where(AppJob.studio_asset_id == a.id, AppJob.job_type == "smart_chapters", AppJob.status == "completed")
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
         items.append(
             AssetListItem(
                 id=a.id,
@@ -110,6 +129,7 @@ def list_assets(session: Session = Depends(get_db)) -> AssetListResponse:
                 has_transcript=has_transcript,
                 has_description=has_description,
                 has_shorts=has_shorts,
+                has_chapters=has_chapters,
             )
         )
 
@@ -150,6 +170,7 @@ def run_subtitles(
                     language=body.language,
                     chunk_minutes=body.chunk_minutes,
                     overlap_seconds=body.overlap_seconds,
+                    beam_size=body.beam_size,
                 )
         except Exception:
             logger.exception("[%s] Subtitle pipeline FAILED", jid)
@@ -416,3 +437,182 @@ def get_asset_shorts(asset_id: uuid.UUID, session: Session = Depends(get_db)) ->
 
     clips = [ClipInfo(**c) for c in job.result_json.get("clips", [])]
     return AssetShortsResponse(job_id=job.id, total_clips=len(clips), clips=clips)
+
+
+@router.post(
+    "/assets/{asset_id}/comment-intelligence/run",
+    response_model=CommentIntelligenceRunResponse,
+)
+def run_comment_intelligence(
+    asset_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_db),
+) -> CommentIntelligenceRunResponse:
+    """Enqueue the comment intelligence pipeline for an asset's linked market video."""
+    asset = session.get(StudioMediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "asset not found")
+    if not asset.market_video_id:
+        raise HTTPException(400, "asset has no market_video_id — link it to a market video first")
+
+    from youtube_suite.application.studio.comment_intelligence_service import (
+        create_comment_intelligence_job,
+        run_comment_intelligence_pipeline as _run_pipeline,
+    )
+
+    video_id = asset.market_video_id
+    jid = create_comment_intelligence_job(session, asset_id, video_id)
+    _asset_id = asset_id
+    _video_id = video_id
+
+    def _work() -> None:
+        from youtube_suite.infrastructure.persistence.session import get_session_factory
+
+        logger.info(
+            "[%s] Comment intelligence pipeline started for asset %s (video=%s)",
+            jid, _asset_id, _video_id,
+        )
+        SessionLocal = get_session_factory()
+        try:
+            with SessionLocal() as sess:
+                _run_pipeline(sess, jid, _asset_id, _video_id)
+            logger.info("[%s] Comment intelligence pipeline complete", jid)
+        except Exception:
+            logger.exception("[%s] Comment intelligence pipeline FAILED", jid)
+
+    background_tasks.add_task(_work)
+    return CommentIntelligenceRunResponse(
+        asset_id=asset_id,
+        job_id=jid,
+        message="comment intelligence pipeline started",
+    )
+
+
+@router.get(
+    "/assets/{asset_id}/comment-intelligence",
+    response_model=CommentIntelligenceResponse,
+)
+def get_comment_intelligence(
+    asset_id: uuid.UUID,
+    session: Session = Depends(get_db),
+) -> CommentIntelligenceResponse:
+    """Return the latest completed comment intelligence result for an asset."""
+    asset = session.get(StudioMediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "asset not found")
+
+    job = session.execute(
+        select(AppJob)
+        .where(AppJob.studio_asset_id == asset_id)
+        .where(AppJob.job_type == "comment_intelligence")
+        .where(AppJob.status == "completed")
+        .order_by(desc(AppJob.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if job is None:
+        raise HTTPException(404, "no completed comment intelligence result for this asset")
+
+    r = job.result_json
+    result = CommentIntelligenceResult(
+        video_id=r["video_id"],
+        comment_count=r["comment_count"],
+        analyzed_at=r["analyzed_at"],
+        sentiment_distribution=SentimentDistribution(**r["sentiment_distribution"]),
+        toxicity_rate=r["toxicity_rate"],
+        fan_vs_critic_ratio=r["fan_vs_critic_ratio"],
+        top_topics=[TopicItem(**t) for t in r["top_topics"]],
+        clusters=[ClusterInfo(**c) for c in r["clusters"]],
+        unanswered_questions=[UnansweredQuestion(**q) for q in r["unanswered_questions"]],
+        summary_text=r["summary_text"],
+    )
+    return CommentIntelligenceResponse(asset_id=asset_id, job_id=job.id, result=result)
+
+
+@router.post(
+    "/assets/{asset_id}/chapters/run",
+    response_model=SmartChaptersRunResponse,
+)
+def run_chapters(
+    asset_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_db),
+) -> SmartChaptersRunResponse:
+    """Enqueue the smart chapters pipeline for a media asset."""
+    asset = session.get(StudioMediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "asset not found")
+
+    has_segments = (
+        session.execute(
+            select(StudioTranscriptSegment.id)
+            .where(StudioTranscriptSegment.asset_id == asset_id)
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+    if not has_segments:
+        raise HTTPException(400, "no transcript segments — run subtitle pipeline first")
+
+    from youtube_suite.application.studio.chapters_service import (
+        create_chapters_job,
+        run_chapters_pipeline as _run_pipeline,
+    )
+
+    jid = create_chapters_job(session, asset_id)
+    _asset_id = asset_id
+
+    def _work() -> None:
+        from youtube_suite.infrastructure.persistence.session import get_session_factory
+
+        logger.info("[%s] Smart chapters pipeline started for asset %s", jid, _asset_id)
+        SessionLocal = get_session_factory()
+        try:
+            with SessionLocal() as sess:
+                _run_pipeline(sess, jid, _asset_id)
+            logger.info("[%s] Smart chapters pipeline complete", jid)
+        except Exception:
+            logger.exception("[%s] Smart chapters pipeline FAILED", jid)
+
+    background_tasks.add_task(_work)
+    return SmartChaptersRunResponse(
+        asset_id=asset_id,
+        job_id=jid,
+        message="smart chapters pipeline started",
+    )
+
+
+@router.get(
+    "/assets/{asset_id}/chapters",
+    response_model=SmartChaptersResponse,
+)
+def get_chapters(
+    asset_id: uuid.UUID,
+    session: Session = Depends(get_db),
+) -> SmartChaptersResponse:
+    """Return the latest completed smart chapters result for an asset."""
+    asset = session.get(StudioMediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "asset not found")
+
+    job = session.execute(
+        select(AppJob)
+        .where(AppJob.studio_asset_id == asset_id)
+        .where(AppJob.job_type == "smart_chapters")
+        .where(AppJob.status == "completed")
+        .order_by(desc(AppJob.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if job is None:
+        raise HTTPException(404, "no completed chapters result for this asset")
+
+    r = job.result_json
+    result = SmartChaptersResult(
+        chapter_count=r["chapter_count"],
+        generated_at=r["generated_at"],
+        youtube_format=r["youtube_format"],
+        titling_method=r["titling_method"],
+        chapters=[ChapterInfo(**ch) for ch in r["chapters"]],
+    )
+    return SmartChaptersResponse(asset_id=asset_id, job_id=job.id, result=result)

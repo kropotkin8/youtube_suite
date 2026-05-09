@@ -35,6 +35,7 @@ export function AssetListItemRow({ asset, selected, onSelect }: Props) {
           <Dot active={asset.has_transcript} title="Subtitles" />
           <Dot active={asset.has_description} title="Description" />
           <Dot active={asset.has_shorts} title="Shorts" />
+          <Dot active={asset.has_chapters} title="Chapters" />
         </div>
       </div>
       <p className="text-xs text-gray-400 mt-1 truncate">{asset.filename}</p>

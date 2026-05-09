@@ -8,6 +8,7 @@ export interface AssetListItem {
   has_transcript: boolean
   has_description: boolean
   has_shorts: boolean
+  has_chapters: boolean
 }
 
 export interface AssetListResponse {
@@ -83,4 +84,25 @@ export interface JobStatus {
   progress: number
   message: string | null
   error: string | null
+}
+
+export interface ChapterInfo {
+  start_seconds: number
+  end_seconds: number
+  title: string
+  text: string
+}
+
+export interface ChaptersResult {
+  chapter_count: number
+  generated_at: string
+  youtube_format: string
+  titling_method: 'claude' | 'extractive' | 'naive_extractive'
+  chapters: ChapterInfo[]
+}
+
+export interface ChaptersResponse {
+  asset_id: string
+  job_id: string | null
+  result: ChaptersResult
 }

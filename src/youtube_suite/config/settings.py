@@ -41,10 +41,23 @@ class Settings(BaseSettings):
     score_speaker_change: float = 0.15
 
     embedding_model: str = "all-mpnet-base-v2"
+
+    chapter_similarity_threshold: float = 0.35
+    chapter_window_seconds: float = 30.0
+    chapter_window_overlap_seconds: float = 5.0
+    chapter_min_duration: float = 30.0
+    chapter_max_title_chars: int = 50
+
+    comment_sentiment_model: str = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+    comment_toxicity_model: str = "unitary/toxic-bert"
+    comment_zeroshot_model: str = "facebook/bart-large-mnli"
+    comment_intelligence_max_comments: int = 500
     audio_sample_rate: int = 16000
     audio_channels: int = 1
+    subtitle_parallel_workers: int = 2
 
     cip_data_dir: Path = Path("./data")
+    kaggle_data_dir: Path = Path("./data/kaggle_trending")
 
     @property
     def score_weights(self) -> dict[str, float]:
@@ -70,4 +83,5 @@ def get_settings() -> Settings:
     (s.cip_data_dir / "clips").mkdir(exist_ok=True)
     (s.cip_data_dir / "metadata").mkdir(exist_ok=True)
     (s.cip_data_dir / "models").mkdir(exist_ok=True)
+    s.kaggle_data_dir.mkdir(parents=True, exist_ok=True)
     return s

@@ -28,6 +28,7 @@ export function ActionButtons({ asset, onJobStarted, onRefresh: _onRefresh }: Pr
   const [descProvider, setDescProvider] = useState<'claude' | 'local'>('local')
   const [shortsOpen, setShortsOpen] = useState(false)
   const [shortsLoading, setShortsLoading] = useState(false)
+  const [chaptersLoading, setChaptersLoading] = useState(false)
   const [subLang, setSubLang] = useState('es')
   const [descLang, setDescLang] = useState('es')
   const [shortsLang, setShortsLang] = useState('es')
@@ -62,6 +63,16 @@ export function ActionButtons({ asset, onJobStarted, onRefresh: _onRefresh }: Pr
     }
   }
 
+  async function runChapters() {
+    setChaptersLoading(true)
+    try {
+      const res = await studioApi.runChapters(asset.id)
+      onJobStarted(res.job_id, 'Generating chapters')
+    } finally {
+      setChaptersLoading(false)
+    }
+  }
+
   async function runShorts() {
     setShortsLoading(true)
     try {
@@ -90,6 +101,11 @@ export function ActionButtons({ asset, onJobStarted, onRefresh: _onRefresh }: Pr
           label="Generate Shorts"
           onClick={() => setShortsOpen((o) => !o)}
           disabled={shortsLoading}
+        />
+        <Btn
+          label="Generate Chapters"
+          onClick={runChapters}
+          disabled={chaptersLoading || !asset.has_transcript}
         />
       </div>
       {subOpen && (
@@ -209,7 +225,7 @@ export function ActionButtons({ asset, onJobStarted, onRefresh: _onRefresh }: Pr
         </div>
       )}
       {!asset.has_transcript && (
-        <p className="text-xs text-gray-400">Generate subtitles first to enable Description.</p>
+        <p className="text-xs text-gray-400">Generate subtitles first to enable Description and Chapters.</p>
       )}
     </div>
   )

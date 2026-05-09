@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any, Literal
 from uuid import UUID
@@ -49,6 +49,7 @@ class SubtitleRunRequest(BaseModel):
     language: str = "es"
     chunk_minutes: int = Field(10, ge=1, le=60)
     overlap_seconds: int = Field(5, ge=0, le=30)
+    beam_size: int = Field(5, ge=1, le=10)
 
 
 class DescriptionRunRequest(BaseModel):
@@ -137,6 +138,7 @@ class AssetListItem(BaseModel):
     has_transcript: bool
     has_description: bool
     has_shorts: bool
+    has_chapters: bool
 
 
 class AssetListResponse(BaseModel):
@@ -155,6 +157,20 @@ class MarketVideoOut(BaseModel):
     duration: str | None
     category_id: str | None
     inserted_at: datetime | None
+    # enriched
+    tags: list[str] | None = None
+    topic_categories: list[str] | None = None
+    definition: str | None = None
+    caption: bool | None = None
+    thumbnail_url: str | None = None
+    default_language: str | None = None
+    made_for_kids: bool | None = None
+    is_embeddable: bool | None = None
+    license: str | None = None
+    trending_date: date | None = None
+    comments_disabled: bool | None = None
+    ratings_disabled: bool | None = None
+    engagement_rate: float | None = None
 
 
 # ── Market listing & charts ───────────────────────────────────────────────────
@@ -169,6 +185,12 @@ class MarketVideoListItem(BaseModel):
     published_at: datetime | None
     duration: str | None
     category_id: str | None
+    # enriched
+    thumbnail_url: str | None = None
+    tags: list[str] | None = None
+    definition: str | None = None
+    default_language: str | None = None
+    engagement_rate: float | None = None
 
 
 class MarketVideoListResponse(BaseModel):
@@ -183,6 +205,7 @@ class MarketOverviewResponse(BaseModel):
     total_channels: int
     total_comments: int
     total_views: int
+    avg_engagement_rate: float | None = None
 
 
 class TopVideoItem(BaseModel):
@@ -217,9 +240,148 @@ class CategoryBreakdownResponse(BaseModel):
     data: list[CategoryBreakdownItem]
 
 
+# ── ML Analysis schemas ───────────────────────────────────────────────────────
+
+class ClusterPoint(BaseModel):
+    video_id: str
+    cluster: int
+    engagement_rate: float
+    duration_seconds: float
+    category_id: str | None
+
+
+class ClusterCentroid(BaseModel):
+    cluster: int
+    engagement_rate: float
+    duration_seconds: float
+
+
+class ClusteringResponse(BaseModel):
+    points: list[ClusterPoint]
+    centroids: list[ClusterCentroid]
+    n_clusters: int
+
+
+class EngagementPredictionPoint(BaseModel):
+    category_id: str | None
+    predicted: float
+    actual: float
+
+
+class EngagementPredictionResponse(BaseModel):
+    points: list[EngagementPredictionPoint]
+    r2: float
+    coefficients: dict[str, float]
+
+
+class AnomalyPoint(BaseModel):
+    video_id: str
+    title: str | None
+    category_id: str | None
+    engagement_rate: float
+    anomaly_score: float
+
+
+class AnomalyResponse(BaseModel):
+    anomalies: list[AnomalyPoint]
+    threshold: float
+
+
+class TrendPoint(BaseModel):
+    category_id: str | None
+    slope: float
+    direction: str  # "up" | "down" | "flat"
+    r2: float
+
+
+class TrendResponse(BaseModel):
+    trends: list[TrendPoint]
+
+
 # ── Studio extras ─────────────────────────────────────────────────────────────
 
 class AssetShortsResponse(BaseModel):
     job_id: UUID
     total_clips: int
     clips: list[ClipInfo]
+
+
+# ── Comment Intelligence ──────────────────────────────────────────────────────
+
+class CommentIntelligenceRunResponse(BaseModel):
+    asset_id: UUID
+    job_id: UUID
+    message: str
+
+
+class SentimentDistribution(BaseModel):
+    positive: float
+    neutral: float
+    negative: float
+
+
+class TopicItem(BaseModel):
+    label: str
+    count: int
+    percentage: float
+
+
+class ClusterInfo(BaseModel):
+    id: int
+    label: str
+    size: int
+    top_comments: list[str]
+    dominant_sentiment: str
+
+
+class UnansweredQuestion(BaseModel):
+    text: str
+    likes: int
+
+
+class CommentIntelligenceResult(BaseModel):
+    video_id: str
+    comment_count: int
+    analyzed_at: datetime
+    sentiment_distribution: SentimentDistribution
+    toxicity_rate: float
+    fan_vs_critic_ratio: float
+    top_topics: list[TopicItem]
+    clusters: list[ClusterInfo]
+    unanswered_questions: list[UnansweredQuestion]
+    summary_text: str
+
+
+class CommentIntelligenceResponse(BaseModel):
+    asset_id: UUID
+    job_id: UUID | None = None
+    result: CommentIntelligenceResult
+
+
+# ── Smart Chapters ────────────────────────────────────────────────────────────
+
+class ChapterInfo(BaseModel):
+    start_seconds: float
+    end_seconds: float
+    title: str
+    text: str
+
+
+class SmartChaptersRunResponse(BaseModel):
+    asset_id: UUID
+    job_id: UUID
+    message: str
+
+
+class SmartChaptersResult(BaseModel):
+    chapter_count: int
+    generated_at: datetime
+    youtube_format: str
+    titling_method: str
+    chapters: list[ChapterInfo]
+
+
+class SmartChaptersResponse(BaseModel):
+    asset_id: UUID
+    job_id: UUID | None = None
+    result: SmartChaptersResult
